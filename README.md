@@ -114,7 +114,44 @@ python src/batch_process.py \
   --limit 10
 ```
 
-## 5. Dashboard
+## 5. Evaluasi Model 1
+
+Evaluasi Model 1 dilakukan pada level video. Ground truth diambil dari struktur
+folder Nexar: `positive` dianggap collision/near-collision dan `negative`
+dianggap normal driving. Prediksi diambil dari CSV hasil batch processing.
+
+Jalankan inference batch terlebih dahulu:
+
+```bash
+python src/batch_process.py \
+  --input-dir dataset/nexar \
+  --output-dir outputs/batch
+```
+
+Lalu evaluasi:
+
+```bash
+python src/evaluate_model1.py \
+  --dataset-dir dataset/nexar \
+  --predictions-dir outputs/batch \
+  --threshold 50 \
+  --output outputs/model1_evaluation.csv \
+  --summary outputs/model1_evaluation_summary.json \
+  --sweep-output outputs/model1_threshold_sweep.csv
+```
+
+Output evaluasi:
+
+```text
+outputs/model1_evaluation.csv          prediksi per video
+outputs/model1_evaluation_summary.json accuracy, precision, recall, F1, confusion matrix
+outputs/model1_threshold_sweep.csv     metrik untuk beberapa threshold
+```
+
+Catatan: jika `missing_predictions` besar, berarti belum semua video punya CSV
+hasil inference di `outputs/batch`.
+
+## 6. Dashboard
 
 ```bash
 streamlit run dashboard.py
@@ -124,7 +161,7 @@ Dashboard membaca `outputs/events.csv` atau file CSV yang diunggah.
 Jika tersedia, dashboard juga membaca `outputs/frame_summary.csv` untuk risk
 timeline per frame.
 
-## 6. Model 1: Pretrained YOLO Baseline
+## 7. Model 1: Pretrained YOLO Baseline
 
 Model 1 tidak melakukan training. Alurnya:
 
@@ -188,7 +225,80 @@ tetap digambar sebagai bounding box tanpa alert. Tidak ada countdown,
 near-miss, atau alert hold. Bounding box mengikuti hasil tracking kendaraan
 pada frame berjalan.
 
-## 7. Integrasi Dataset untuk Training YOLO
+## 8. Model 2: Fine-tuned YOLO + ML Risk
+
+Model 2 memakai file terpisah supaya baseline Model 1 tetap bisa dibandingkan.
+Alurnya:
+
+1. YOLO11 fine-tuned pada frame Nexar mendeteksi road user.
+2. ByteTrack atau BoT-SORT memberi ID tracking.
+3. Fitur trajectory, bbox growth, TTC relatif, speed, acceleration, dan zona ego
+   dihitung ulang dengan engine fitur yang sama.
+4. `src/model2_risk_engine.py` memuat model risk ML dari `.npz`.
+5. Jika model risk ML belum ada, inference bisa fallback ke rule Model 1 agar
+   detector fine-tuned tetap dapat dites.
+
+Jalankan inference Model 2:
+
+```bash
+python src/infer_model2.py \
+  --input dataset/nexar/train/NAMA_VIDEO.mp4 \
+  --output outputs/model2_result.mp4 \
+  --events outputs/model2_events.csv \
+  --summary outputs/model2_frame_summary.csv \
+  --detector runs/detect/model2_nexar/weights/best.pt \
+  --risk-model models/model2_risk_model.npz \
+  --tracker bytetrack.yaml \
+  --conf 0.25
+```
+
+Kalau ingin memastikan risk ML wajib ada dan tidak fallback:
+
+```bash
+python src/infer_model2.py \
+  --input dataset/nexar/train/NAMA_VIDEO.mp4 \
+  --detector runs/detect/model2_nexar/weights/best.pt \
+  --risk-model models/model2_risk_model.npz \
+  --no-rule-fallback
+```
+
+Untuk testing sementara sebelum `best.pt` hasil fine-tuning tersedia, pakai
+pretrained detector:
+
+```bash
+python src/infer_model2.py \
+  --input dataset/nexar/train/NAMA_VIDEO.mp4 \
+  --detector yolo11s.pt \
+  --allow-pretrained-detector-fallback
+```
+
+Catatan: mode ini belum Model 2 penuh karena detector-nya belum fine-tuned.
+
+Train risk model ML dari CSV fitur berlabel:
+
+```bash
+python src/train_model2_risk.py \
+  --features dataset/model2_features.csv \
+  --output models/model2_risk_model.npz
+```
+
+CSV training membutuhkan kolom fitur seperti `events.csv`:
+`ttc_seconds`, `lane_distance`, `relative_distance`, `speed_px_s`,
+`horizontal_speed_px_s`, `vertical_speed_px_s`, `acceleration_px_s2`,
+`bbox_growth_rate`, `bbox_width_growth_rate`, `bbox_area_growth_rate`,
+`trajectory_intersection`, `impact_zone_intersection`, `in_ego_corridor`,
+`in_impact_zone`, `near_enough`, `moving_toward_ego_center`,
+`approaching_camera`, dan `collision_candidate`.
+
+Label bisa memakai salah satu kolom: `label`, `risk_label`, `target`,
+`collision`, `is_collision`, `status`, atau `risk_score`. Nilai positif:
+`DANGER`, `HIGH RISK`, `RISK`, `NEAR-MISS`, `1`, `TRUE`. Nilai negatif:
+`SAFE`, `WARNING`, `NORMAL`, `0`, `FALSE`.
+
+Output Model 2 tetap memakai kategori visual yang sama:
+`SAFE`, `WARNING`, `HIGH RISK`, dan `DANGER`.
+
+## 9. Integrasi Dataset untuk Training YOLO
 
 Dataset Nexar tidak bisa langsung dipakai untuk `yolo detect train` karena
 labelnya masih tingkat video, bukan bounding box per objek. Untuk training
@@ -270,6 +380,8 @@ Setelah label terisi, jalankan training:
 yolo detect train \
   model=yolo11n.pt \
   data=dataset/yolo_nexar_frames/data.yaml \
+  project=runs/detect \
+  name=model2_nexar \
   imgsz=640 \
   epochs=50 \
   batch=16
@@ -300,10 +412,14 @@ frame,time_seconds,track_id,object,detection_confidence,risk_score,status,ttc_se
 nexar_yolo_nearmiss/
 ├── dataset/
 ├── outputs/
-├── src/
-│   ├── batch_process.py
-│   ├── infer.py
-│   └── risk_engine.py
+	├── src/
+	│   ├── batch_process.py
+	│   ├── evaluate_model1.py
+	│   ├── infer.py
+	│   ├── infer_model2.py
+	│   ├── model2_risk_engine.py
+	│   ├── risk_engine.py
+	│   └── train_model2_risk.py
 ├── dashboard.py
 ├── download_nexar.py
 ├── install.sh
