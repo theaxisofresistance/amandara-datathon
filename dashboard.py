@@ -38,19 +38,26 @@ if events.empty and summary.empty:
     st.info("Jalankan inferensi atau unggah CSV hasil model 1.")
     st.stop()
 
-risk_count = 0
+danger_count = 0
+high_risk_count = 0
+warning_count = 0
 safe_count = 0
 average_risk = 0.0
 average_ttc = "N/A"
 
 if not events.empty:
-    risk_count = int((events["status"] == "RISK").sum())
+    danger_count = int((events["status"] == "DANGER").sum())
+    high_risk_count = int((events["status"] == "HIGH RISK").sum())
+    warning_count = int((events["status"] == "WARNING").sum())
+    safe_count = int((events["status"] == "SAFE").sum())
     average_risk = float(events["risk_score"].mean())
     valid_ttc = pd.to_numeric(events["ttc_seconds"], errors="coerce").dropna()
     if not valid_ttc.empty:
         average_ttc = f"{valid_ttc.mean():.2f}s"
 elif not summary.empty:
-    risk_count = int((summary["max_risk_status"] == "RISK").sum())
+    danger_count = int((summary["max_risk_status"] == "DANGER").sum())
+    high_risk_count = int((summary["max_risk_status"] == "HIGH RISK").sum())
+    warning_count = int((summary["max_risk_status"] == "WARNING").sum())
     safe_count = int((summary["max_risk_status"] == "SAFE").sum())
     average_risk = float(summary["max_risk_score"].mean())
     valid_ttc = pd.to_numeric(
@@ -62,11 +69,14 @@ elif not summary.empty:
 
 col1, col2, col3, col4 = st.columns(4)
 col1.metric("Total event", len(events))
-col2.metric("RISK", risk_count)
-col3.metric("SAFE frame", safe_count)
+col2.metric("DANGER", danger_count)
+col3.metric("HIGH RISK", high_risk_count)
 col4.metric("TTC rata-rata", average_ttc)
 
-st.metric("Risk rata-rata", f"{average_risk:.1f}")
+col5, col6, _ = st.columns(3)
+col5.metric("WARNING", warning_count)
+col6.metric("SAFE frame", safe_count)
+st.metric("Risk score rata-rata", f"{average_risk:.1f}")
 
 if not summary.empty:
     st.subheader("Risk over time")

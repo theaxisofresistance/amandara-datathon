@@ -139,26 +139,30 @@ Model 1 tidak melakukan training. Alurnya:
    - speed dan acceleration dalam piksel per detik;
    - bbox growth rate;
    - trajectory intersection ke zona ego.
-5. Output hanya memakai dua kategori: `SAFE` dan `RISK`.
+5. Output memakai empat kategori skor:
+   - `DANGER` untuk score >= 75;
+   - `HIGH RISK` untuk score 50-74;
+   - `WARNING` untuk score 25-49;
+   - `SAFE` untuk score < 25.
 6. Kendaraan dikategorikan `SAFE` jika:
    - berada di area A/samping dan hanya lewat;
    - menuju area A lalu hilang dari frame;
    - menuju center tetapi bounding box tetap atau mengecil;
    - membesar tetapi tetap di samping atau bergerak ke samping.
 7. Area ego adalah C: bagian bawah-tengah frame, dekat kamera/kendaraan sendiri.
-   Area A dan B bukan ego area. Kendaraan dikategorikan `RISK` hanya jika
-   bergerak menuju area C dan bounding box membesar. Pertumbuhan dihitung dari
-   tinggi, lebar, dan area bounding box karena kendaraan dari samping sering
-   membesar terutama pada lebar/area.
+   Area A dan B bukan ego area. Kendaraan masuk `HIGH RISK` atau `DANGER`
+   hanya jika bergerak menuju area C dan bounding box membesar. Pertumbuhan
+   dihitung dari tinggi, lebar, dan area bounding box karena kendaraan dari
+   samping sering membesar terutama pada lebar/area.
    Kendaraan yang membesar di pojok A lalu menghilang tetap `SAFE` karena tidak
    menuju C. `edge_intrusion` hanya dipakai untuk debug CSV, bukan syarat cukup
-   untuk `RISK`.
+   untuk alert.
 
 Output model 1:
 
 ```text
-outputs/result.mp4          hanya kandidat tabrakan dengan bbox, ID, trajectory, TTC, risk
-outputs/events.csv          event kandidat tabrakan kategori RISK
+outputs/result.mp4          semua road user dengan bbox, ID, trajectory, status, score
+outputs/events.csv          event kategori HIGH RISK dan DANGER
 outputs/frame_summary.csv   ringkasan kandidat tabrakan setiap frame
 ```
 
@@ -175,19 +179,14 @@ python src/infer.py \
   --conf 0.30
 ```
 
-Secara default, video output tidak menampilkan semua kendaraan yang terdeteksi
-YOLO. Kendaraan normal dipakai hanya untuk tracking internal, lalu diabaikan
-jika tidak menuju koridor ego. Untuk debugging deteksi mentah, tambahkan:
+Secara default, video output menampilkan semua kendaraan yang terdeteksi YOLO.
+`SAFE` diberi bounding box hijau, `WARNING` kuning, `HIGH RISK` oranye, dan
+`DANGER` merah.
 
-```bash
-python src/infer.py \
-  --input dataset/nexar/train/NAMA_VIDEO.mp4 \
-  --show-all-objects
-```
-
-Label peringatan pada video hanya `RISK`. Tidak ada countdown, warning,
-high-risk, near-miss, atau alert hold. Bounding box mengikuti hasil tracking
-kendaraan pada frame berjalan.
+Alert banner hanya muncul untuk `HIGH RISK` dan `DANGER`. `SAFE` dan `WARNING`
+tetap digambar sebagai bounding box tanpa alert. Tidak ada countdown,
+near-miss, atau alert hold. Bounding box mengikuti hasil tracking kendaraan
+pada frame berjalan.
 
 ## 7. Integrasi Dataset untuk Training YOLO
 
@@ -286,8 +285,8 @@ frame belum berhasil atau split yang dipilih belum punya video lokal.
 
 - class dan tracking ID;
 - trajectory;
-- risk score biner: 0 untuk `SAFE`, 100 untuk `RISK`;
-- status `SAFE` atau `RISK`.
+- risk score 0-100;
+- status `SAFE`, `WARNING`, `HIGH RISK`, atau `DANGER`.
 
 ## Output CSV
 

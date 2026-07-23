@@ -84,6 +84,7 @@ def draw_tracked_alert(
 
 def draw_risk_warning(
     frame,
+    status: str,
 ) -> None:
     height, width = frame.shape[:2]
     overlay = frame.copy()
@@ -98,7 +99,7 @@ def draw_risk_warning(
 
     cv2.putText(
         frame,
-        "RISK",
+        status,
         (32, 55),
         cv2.FONT_HERSHEY_SIMPLEX,
         1.35,
@@ -128,7 +129,6 @@ def process_video(
     tracker: str,
     confidence: float,
     device: str | None,
-    show_all_objects: bool,
 ) -> None:
     model = YOLO(model_path)
     class_names = model_class_names(model)
@@ -182,7 +182,7 @@ def process_video(
         max_risk_object = ""
         max_risk_track_id = ""
         max_risk_ttc: float | None = None
-        has_risk = False
+        has_alert = False
         detected_object_count = 0
         collision_candidate_count = 0
 
@@ -242,9 +242,6 @@ def process_video(
                 status, color = risk_category(score)
                 detected_object_count += 1
 
-                if not features.collision_candidate and not show_all_objects:
-                    continue
-
                 collision_candidate_count += int(features.collision_candidate)
 
                 if score >= max_risk:
@@ -257,8 +254,8 @@ def process_video(
                     max_risk_track_id = "" if track_id < 0 else str(track_id)
                     max_risk_ttc = features.ttc
 
-                if features.collision_candidate:
-                    has_risk = True
+                if score >= 50:
+                    has_alert = True
 
                 draw_color = color
                 object_name = class_names.get(
@@ -266,10 +263,7 @@ def process_video(
                     ROAD_USERS.get(class_id, str(class_id)),
                 )
                 track_text = f" #{track_id}" if track_id >= 0 else ""
-                if features.collision_candidate:
-                    label = f"{object_name}{track_text} | RISK"
-                else:
-                    label = f"{object_name}{track_text} | SAFE"
+                label = f"{object_name}{track_text} | {status} {score:.0f}"
                 draw_tracked_alert(
                     annotated,
                     (x1, y1, x2, y2),
@@ -281,7 +275,7 @@ def process_video(
                 cooldown = int(fps * 2)
                 if (
                     track_id >= 0
-                    and features.collision_candidate
+                    and score >= 50
                     and frame_index - last_event_frame[track_id] >= cooldown
                 ):
                     events.append(
@@ -396,8 +390,8 @@ def process_video(
             cv2.LINE_AA,
         )
 
-        if has_risk:
-            draw_risk_warning(annotated)
+        if has_alert:
+            draw_risk_warning(annotated, max_risk_status)
 
 
         writer.write(annotated)
@@ -495,11 +489,6 @@ def main() -> None:
         default=None,
         help="cpu, mps, atau indeks CUDA seperti 0.",
     )
-    parser.add_argument(
-        "--show-all-objects",
-        action="store_true",
-        help="Tampilkan semua kendaraan untuk debugging. Default hanya kandidat tabrakan.",
-    )
     args = parser.parse_args()
 
     process_video(
@@ -511,7 +500,6 @@ def main() -> None:
         tracker=args.tracker,
         confidence=args.conf,
         device=args.device,
-        show_all_objects=args.show_all_objects,
     )
 
 

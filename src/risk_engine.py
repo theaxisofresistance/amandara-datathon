@@ -121,7 +121,7 @@ def trajectory_to_ego_zone(
     frame_width: int,
     frame_height: int,
     fps: float,
-    horizon_frames: int = 30,
+    horizon_frames: int = 90,
 ) -> tuple[bool, float | None, bool]:
     if len(centers) < 4:
         return False, None, False
@@ -151,7 +151,7 @@ def trajectory_to_impact_zone(
     frame_width: int,
     frame_height: int,
     fps: float,
-    horizon_frames: int = 30,
+    horizon_frames: int = 90,
 ) -> tuple[bool, float | None]:
     if len(centers) < 4:
         return False, None
@@ -194,6 +194,31 @@ def point_in_impact_zone(
     frame_height: int,
 ) -> bool:
     return point_in_ego_corridor(center, frame_width, frame_height)
+
+
+def bbox_overlaps_ego_area(
+    center: tuple[float, float],
+    bbox_width: float,
+    bbox_height: float,
+    frame_width: int,
+    frame_height: int,
+) -> bool:
+    x, y = center
+    box_x1 = x - bbox_width / 2.0
+    box_y1 = y - bbox_height / 2.0
+    box_x2 = x + bbox_width / 2.0
+    box_y2 = y + bbox_height / 2.0
+
+    ego_x1 = frame_width * 0.18
+    ego_y1 = frame_height * 0.76
+    ego_x2 = frame_width * 0.82
+    ego_y2 = frame_height * 1.02
+
+    overlap_w = max(0.0, min(box_x2, ego_x2) - max(box_x1, ego_x1))
+    overlap_h = max(0.0, min(box_y2, ego_y2) - max(box_y1, ego_y1))
+    overlap_area = overlap_w * overlap_h
+    box_area = max(bbox_width * bbox_height, 1.0)
+    return overlap_area > 0.0 and overlap_area / box_area >= 0.08
 
 
 def bbox_edge_intrusion(
@@ -284,8 +309,21 @@ def extract_features(
         elapsed = max((state.frames[-1] - state.frames[0]) / max(fps, 1e-6), 1e-3)
         area_growth_rate = (last - first) / elapsed
 
-    in_corridor = point_in_ego_corridor(center, frame_width, frame_height)
-    in_impact_zone = point_in_impact_zone(center, frame_width, frame_height)
+    overlaps_ego = bbox_overlaps_ego_area(
+        center,
+        bbox_width,
+        bbox_height,
+        frame_width,
+        frame_height,
+    )
+    in_corridor = (
+        point_in_ego_corridor(center, frame_width, frame_height)
+        or overlaps_ego
+    )
+    in_impact_zone = (
+        point_in_impact_zone(center, frame_width, frame_height)
+        or overlaps_ego
+    )
     edge_intrusion = bbox_edge_intrusion(
         center,
         bbox_width,
@@ -308,10 +346,10 @@ def extract_features(
     frame_area = max(frame_width * frame_height, 1)
     normalized_area_growth = area_growth_rate / frame_area
     approaching_camera = (
-        growth_rate > 45.0
-        or width_growth_rate > 90.0
-        or normalized_area_growth > 0.018
-        or (ttc is not None and ttc < 3.0)
+        growth_rate > 18.0
+        or width_growth_rate > 30.0
+        or normalized_area_growth > 0.004
+        or (ttc is not None and ttc < 5.0)
     )
     near_enough = object_is_near_enough(center, bbox_height, frame_height)
     x_norm = center[0] / max(frame_width, 1)
@@ -324,15 +362,13 @@ def extract_features(
     crossing_motion = (
         impact_intersection
         and side_motion_toward_center
-        and near_enough
-        and speed > 160.0
+        and speed > 80.0
         and approaching_camera
         and time_to_impact is not None
-        and time_to_impact <= 3.0
+        and time_to_impact <= 5.0
     )
     frontal_collision_course = (
         in_impact_zone
-        and near_enough
         and approaching_camera
     )
     return RiskFeatures(
@@ -370,43 +406,52 @@ def calculate_risk_from_features(
 ) -> tuple[float, list[str]]:
     reasons: list[str] = []
 
-    if not features.near_enough:
-        return 0.0, ["SAFE: objek masih terlalu jauh"]
-
     if not features.approaching_camera:
+        if features.trajectory_intersection or features.impact_zone_intersection:
+            return 15.0, ["SAFE: menuju area ego tetapi bbox mengecil / tidak mendekat"]
         return 0.0, ["SAFE: bbox tidak membesar / objek menjauh"]
 
     if (
         not features.in_impact_zone
         and not features.impact_zone_intersection
     ):
-        return 0.0, ["SAFE: membesar tetapi tidak menuju zona benturan ego"]
+        return 20.0, ["SAFE: bbox membesar tetapi tidak menuju zona benturan ego"]
 
     if (
         not features.in_ego_corridor
         and not features.trajectory_intersection
     ):
-        return 0.0, ["SAFE: di luar koridor ego"]
+        return 35.0, ["WARNING: di luar koridor ego"]
 
     if not features.collision_candidate:
-        return 0.0, ["SAFE: tidak menuju ego sambil membesar"]
+        return 45.0, ["WARNING: indikasi mendekat, tetapi trajectory belum kuat ke area ego"]
 
-    reasons.append("RISK: menuju zona ego dan bbox membesar")
+    score = 55.0
+    reasons.append("HIGH RISK: menuju zona ego dan bbox membesar")
     if features.trajectory_intersection:
+        score += 10.0
         reasons.append("trajectory masuk zona ego")
     if features.in_ego_corridor:
+        score += 10.0
         reasons.append("di koridor ego")
     if features.in_impact_zone:
+        score += 10.0
         reasons.append("di zona benturan ego")
     if features.impact_zone_intersection:
+        score += 10.0
         reasons.append("trajectory menuju zona benturan ego")
-    if features.edge_intrusion:
-        reasons.append("kendaraan masuk dari tepi dekat ego")
     if features.moving_toward_ego_center:
+        score += 10.0
         reasons.append("bergerak menuju center ego")
     if features.approaching_camera:
+        score += 10.0
         reasons.append("ukuran bbox membesar / mendekat")
-    return 100.0, reasons
+    if features.near_enough:
+        score += 5.0
+        reasons.append("objek sudah dekat")
+    if features.edge_intrusion:
+        reasons.append("kendaraan masuk dari tepi dekat ego")
+    return clamp(score, 50.0, 100.0), reasons
 
 
 def calculate_risk(
@@ -446,6 +491,10 @@ def calculate_risk(
 
 
 def risk_category(score: float) -> tuple[str, tuple[int, int, int]]:
+    if score >= 75:
+        return "DANGER", (0, 0, 255)
     if score >= 50:
-        return "RISK", (0, 0, 255)
+        return "HIGH RISK", (0, 128, 255)
+    if score >= 25:
+        return "WARNING", (0, 220, 255)
     return "SAFE", (0, 200, 0)
